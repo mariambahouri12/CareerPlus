@@ -1,0 +1,9 @@
+streamlit
+ollama
+sentence-transformers
+faiss-cpu
+numpy
+playwright
+fastapi
+uvicorn[standard]
+pydantic
