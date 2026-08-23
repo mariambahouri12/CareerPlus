@@ -2,7 +2,7 @@
 """
 LinkedIn Playwright scraper.
 
-Key improvements vs v1
+
 ─────────────────────
 * Multi-company: accepts a list of company names and applies each as a filter
   tick, so 2 companies → both boxes checked, 3 → 3 boxes checked, etc.
@@ -17,7 +17,6 @@ Key improvements vs v1
 import asyncio
 import json
 import logging
-from pathlib import Path
 from typing import List, Dict
 
 from playwright.async_api import async_playwright, Page, BrowserContext
@@ -28,6 +27,17 @@ logger = logging.getLogger(__name__)
 
 
 class LinkedInScraper:
+
+    name = "scrape_jobs"
+
+    description = (
+        "Scrape new job offers from LinkedIn for a given job title, "
+        "optionally filtered by one or more company names. Use this "
+        "when the user wants to discover new offers on LinkedIn that "
+        "are not yet indexed. Scraped offers are automatically indexed "
+        "and become searchable via search_jobs."
+    )
+
     def __init__(self) -> None:
         self.user_data_dir  = config.USER_DATA_DIR
         self.page_delay     = config.SCRAPE_PAGE_DELAY
@@ -454,4 +464,3 @@ class LinkedInScraper:
             logger.info("Saved TXT: %s", txt_path)
         except Exception as exc:
             logger.error("TXT save failed: %s", exc)
-

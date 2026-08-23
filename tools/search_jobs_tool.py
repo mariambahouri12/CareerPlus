@@ -3,38 +3,46 @@ from rag.retriever import JobRetriever
 
 class SearchJobsTool:
     """
-    Tool for hybrid job search.
+    Tool for hybrid job search and CV-job matching.
 
-    Pipeline:
+    Normal search:
 
+        User Query
+             ↓
         FAISS + BM25
-              ↓
-             RRF
-              ↓
+             ↓
+            RRF
+             ↓
         Candidate retrieval
-              ↓
-          Cross-encoder
-           reranking
-              ↓
-      reranker_score >= 0.30
-              ↓
-          sort by score
-              ↓
-             top_k
+             ↓
+        Cross-encoder reranking
+             ↓
+        Threshold
+             ↓
+           Top-K
+
+
+    CV matching:
+
+        User Query + CV
+             ↓
+        FAISS + BM25
+             ↓
+            RRF
+             ↓
+        Candidate retrieval
+             ↓
+        Cross-encoder reranking
+             ↓
+        Threshold
+             ↓
+           Top-K
     """
 
     name = "search_jobs"
 
     description = (
-        "Search among job offers already scraped and indexed. "
-        "Uses semantic search, lexical search and reranking. "
-        "Only returns job offers with a reranker score >= 0.30. "
-        "The threshold is applied before top_k selection. "
-        "If fewer than top_k offers meet the threshold, "
-        "only those offers are returned. "
-        "Use this for questions about existing job offers "
-        "(skills required, location, technologies, "
-        "or relevance to a topic)."
+        "Searches indexed job offers via hybrid semantic+lexical retrieval with reranking. Set use_cv=true only if the request requires comparing offers against the candidatesprofile rather than a keyword/topic search."
     )
 
     # ============================================================
@@ -60,32 +68,25 @@ class SearchJobsTool:
         self,
         query: str,
         top_k: int = 5,
+        use_cv: bool = False,
+        cv_text: str | None = None,
     ):
         """
         Search for relevant job offers.
 
-        Logic:
+        Parameters
+        ----------
+        query:
+            User's job-related query.
 
-            1. Retrieve up to RETRIEVAL_K candidates.
-            2. Rerank all candidates.
-            3. Keep only candidates with
-               reranker_score >= RERANKER_THRESHOLD.
-            4. Sort by reranker score descending.
-            5. Return at most top_k results.
+        top_k:
+            Maximum number of results.
 
-        Examples:
+        use_cv:
+            If True, the CV is included in the search query.
 
-            7 offers >= 0.30 and top_k=5
-                -> return 5
-
-            7 offers >= 0.30 and top_k=15
-                -> return 7
-
-            3 offers >= 0.30 and top_k=5
-                -> return 3
-
-            0 offers >= 0.30
-                -> return 0
+        cv_text:
+            Uploaded CV text.
         """
 
         # --------------------------------------------------------
@@ -95,23 +96,59 @@ class SearchJobsTool:
         if top_k < 1:
             top_k = 1
 
+        if top_k > 20:
+            top_k = 20
+
         # --------------------------------------------------------
-        # 1. Retrieve and rerank candidates
+        # Validate CV matching
+        # --------------------------------------------------------
+
+        if use_cv and not cv_text:
+
+            return {
+                "status": "error",
+                "message": (
+                    "CV matching was requested, but no CV "
+                    "has been uploaded."
+                ),
+                "matches_found": 0,
+                "cv_matching": False,
+                "results": [],
+            }
+
+        # --------------------------------------------------------
+        # Build search query
+        # --------------------------------------------------------
+
+        search_query = query
+
+        if use_cv:
+
+            search_query = f"""
+User request:
+{query}
+
+Candidate CV:
+{cv_text}
+""".strip()
+
+        # --------------------------------------------------------
+        # Retrieve candidates
         # --------------------------------------------------------
         #
         # IMPORTANT:
-        # The retriever reranks RETRIEVAL_K candidates.
-        # We do NOT pass the user's top_k here because top_k
-        # must be applied AFTER the threshold.
+        # We retrieve/rerank RETRIEVAL_K candidates.
+        # The user's top_k is applied AFTER the threshold.
         #
+
         results = self.retriever.search(
-            query=query,
-            top_k=top_k,
+            query=search_query,
+            top_k=self.RETRIEVAL_K,
             retrieval_k=self.RETRIEVAL_K,
         )
 
         # --------------------------------------------------------
-        # 2. Apply reranker threshold
+        # Apply reranker threshold
         # --------------------------------------------------------
 
         filtered_results = [
@@ -119,34 +156,40 @@ class SearchJobsTool:
             for r in results
             if r.get(
                 "reranker_score",
-                0.0
+                0.0,
             ) >= self.RERANKER_THRESHOLD
         ]
 
         # --------------------------------------------------------
-        # 3. Sort by reranker score
+        # Sort by reranker score
         # --------------------------------------------------------
 
         filtered_results.sort(
             key=lambda r: r.get(
                 "reranker_score",
-                0.0
+                0.0,
             ),
             reverse=True,
         )
 
         # --------------------------------------------------------
-        # 4. Apply user's top_k AFTER threshold
+        # Apply top_k AFTER threshold
         # --------------------------------------------------------
 
         selected_results = filtered_results[:top_k]
 
         # --------------------------------------------------------
-        # 5. Format output
+        # Format results
         # --------------------------------------------------------
 
         return {
-            "matches_found": len(selected_results),
+            "status": "success",
+
+            "matches_found": len(
+                selected_results
+            ),
+
+            "cv_matching": use_cv,
 
             "results": [
                 {
@@ -155,7 +198,10 @@ class SearchJobsTool:
                     "faiss_score": round(
                         r.get(
                             "score",
-                            0.0
+                            r.get(
+                                "faiss_score",
+                                0.0,
+                            ),
                         ),
                         3,
                     ),
@@ -163,7 +209,7 @@ class SearchJobsTool:
                     "bm25_score": round(
                         r.get(
                             "bm25_score",
-                            0.0
+                            0.0,
                         ),
                         3,
                     ),
@@ -171,7 +217,7 @@ class SearchJobsTool:
                     "rrf_score": round(
                         r.get(
                             "rrf_score",
-                            0.0
+                            0.0,
                         ),
                         5,
                     ),
@@ -179,7 +225,7 @@ class SearchJobsTool:
                     "reranker_score": round(
                         r.get(
                             "reranker_score",
-                            0.0
+                            0.0,
                         ),
                         3,
                     ),

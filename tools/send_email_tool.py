@@ -13,6 +13,17 @@ class SendEmailTool:
     Tool responsible for sending emails through Gmail API.
     """
 
+    name = "send_email"
+
+    description = (
+        "Send a job application email through the user's Gmail "
+        "account. Use this when the user wants to send an "
+        "application to a company (spontaneous or in response to "
+        "a specific offer). The email is sent first; only if "
+        "sending succeeds is the application automatically "
+        "recorded (company, recipient, date, spontaneous flag)."
+    )
+
     SCOPES = [
         "https://www.googleapis.com/auth/gmail.send"
     ]
