@@ -12,6 +12,13 @@ class ToolCallRecord:
     tool: str
     arguments: Dict[str, Any]
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "step": self.step,
+            "tool": self.tool,
+            "arguments": self.arguments,
+        }
+
 
 @dataclass
 class ToolResultRecord:
@@ -22,6 +29,13 @@ class ToolResultRecord:
     step: int
     tool: str
     result: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "step": self.step,
+            "tool": self.tool,
+            "result": self.result,
+        }
 
 
 @dataclass
@@ -147,20 +161,12 @@ class AgentState:
             "cv_available": self.cv_text is not None,
 
             "tool_calls": [
-                {
-                    "step": call.step,
-                    "tool": call.tool,
-                    "arguments": call.arguments,
-                }
+                call.to_dict()
                 for call in self.tool_calls
             ],
 
             "tool_results": [
-                {
-                    "step": result.step,
-                    "tool": result.tool,
-                    "result": result.result,
-                }
+                result.to_dict()
                 for result in self.tool_results
             ],
 

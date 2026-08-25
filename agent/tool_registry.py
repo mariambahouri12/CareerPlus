@@ -32,19 +32,24 @@ class ToolRegistry:
     def __init__(self):
 
         self._instances: Dict[str, Any] = {}
-
-        self.indexer = JobIndexer()
+        self._indexer: Optional[JobIndexer] = None
 
     # ==========================================================
     # LAZY TOOL INSTANTIATION
     # ==========================================================
+
+    @property
+    def indexer(self) -> JobIndexer:
+        """Return the lazily initialized job indexer."""
+        if self._indexer is None:
+            self._indexer = JobIndexer()
+        return self._indexer
 
     def _get_tool(self, tool_name: str):
         """
         Return the cached instance of a tool, creating it on
         first use.
         """
-
         if tool_name not in self._instances:
 
             tool_class = self._TOOL_CLASSES[tool_name]
@@ -65,7 +70,6 @@ class ToolRegistry:
         (not an instance) — no instantiation needed just to
         list the available tools.
         """
-
         return [
 
             # ==================================================
@@ -101,7 +105,7 @@ class ToolRegistry:
                                 "items": {
                                     "type": "string"
                                 },
-
+                                
                                 "description": (
                                     "Optional list of company "
                                     "names to filter."
@@ -193,7 +197,6 @@ class ToolRegistry:
 
                         "required": [
                             "query",
-                            "use_cv",
                         ],
                     },
                 },
@@ -295,110 +298,91 @@ class ToolRegistry:
         """
 
         # ======================================================
-        # 1. SCRAPE JOBS
+        # TOOL DISPATCH
         # ======================================================
 
-        if tool_name == "scrape_jobs":
+        handlers = {
+            "scrape_jobs": self._execute_scrape_jobs,
+            "get_cv": self._execute_get_cv,
+            "search_jobs": self._execute_search_jobs,
+            "send_email": self._execute_send_email,
+        }
 
-            scraper = self._get_tool("scrape_jobs")
+        handler = handlers.get(tool_name)
 
-            jobs = await scraper.scrape_jobs(
-                job_title=arguments["job_title"],
+        if handler is None:
+            raise ValueError(f"Unknown tool: {tool_name}")
 
-                company_names=arguments.get(
-                    "company_names"
-                ),
+        return await handler(arguments, cv_text)
+
+    async def _execute_scrape_jobs(
+        self,
+        arguments: dict,
+        cv_text: Optional[str] = None,
+    ):
+        scraper = self._get_tool("scrape_jobs")
+
+        jobs = await scraper.scrape_jobs(
+            job_title=arguments["job_title"],
+            company_names=arguments.get("company_names"),
+        )
+
+        if jobs:
+            await asyncio.to_thread(
+                self.indexer.index_jobs,
+                jobs,
             )
 
-            if jobs:
+        return {
+            "status": "success" if jobs else "empty",
+            "message": (
+                f"{len(jobs)} job offers were "
+                "scraped and indexed successfully."
+                if jobs
+                else "No new job offers were found."
+            ),
+            "jobs_count": len(jobs),
+        }
 
-                await asyncio.to_thread(
-                    self.indexer.index_jobs,
-                    jobs,
-                )
+    async def _execute_get_cv(
+        self,
+        arguments: dict,
+        cv_text: Optional[str] = None,
+    ):
+        cv_tool = self._get_tool("get_cv")
 
-            return {
-                "status": "success" if jobs else "empty",
+        return await asyncio.to_thread(
+            cv_tool.run,
+            cv_text=cv_text,
+        )
 
-                "message": (
-                    f"{len(jobs)} job offers were "
-                    "scraped and indexed successfully."
-                    if jobs else
-                    "No new job offers were found."
-                ),
+    async def _execute_search_jobs(
+        self,
+        arguments: dict,
+        cv_text: Optional[str] = None,
+    ):
+        search_tool = self._get_tool("search_jobs")
 
-                "jobs_count": len(jobs),
-            }
+        return await asyncio.to_thread(
+            search_tool.run,
+            query=arguments["query"],
+            top_k=arguments.get("top_k", 5),
+            use_cv=arguments.get("use_cv", False),
+            cv_text=cv_text,
+        )
 
-        # ======================================================
-        # 2. GET CV
-        # ======================================================
+    async def _execute_send_email(
+        self,
+        arguments: dict,
+        cv_text: Optional[str] = None,
+    ):
+        email_tool = self._get_tool("send_email")
 
-        if tool_name == "get_cv":
-
-            cv_tool = self._get_tool("get_cv")
-
-            return await asyncio.to_thread(
-                cv_tool.run,
-                cv_text=cv_text,
-            )
-
-        # ======================================================
-        # 3. SEARCH JOBS
-        # ======================================================
-
-        if tool_name == "search_jobs":
-
-            search_tool = self._get_tool("search_jobs")
-
-            results = await asyncio.to_thread(
-                search_tool.run,
-
-                query=arguments["query"],
-
-                top_k=arguments.get(
-                    "top_k",
-                    5,
-                ),
-
-                use_cv=arguments.get(
-                    "use_cv",
-                    False,
-                ),
-
-                cv_text=cv_text,
-            )
-
-            return results
-
-        # ======================================================
-        # 4. SEND EMAIL
-        # ======================================================
-
-        if tool_name == "send_email":
-
-            email_tool = self._get_tool("send_email")
-
-            result = await asyncio.to_thread(
-                email_tool.send,
-
-                recipient=arguments["recipient"],
-
-                subject=arguments["subject"],
-
-                body=arguments["body"],
-
-                company=arguments["company"],
-
-                spontaneous=arguments["spontaneous"],
-            )
-
-            return result
-
-        # ======================================================
-        # UNKNOWN TOOL
-        # ======================================================
-
-        raise ValueError(
-            f"Unknown tool: {tool_name}"
+        return await asyncio.to_thread(
+            email_tool.send,
+            recipient=arguments["recipient"],
+            subject=arguments["subject"],
+            body=arguments["body"],
+            company=arguments["company"],
+            spontaneous=arguments["spontaneous"],
         )
