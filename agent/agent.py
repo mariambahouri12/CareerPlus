@@ -1,3 +1,15 @@
+"""
+CareerPlus Agent — ReAct-style loop over the tool registry.
+
+The agent:
+  1. Sends the system prompt + history + user query to the LLM
+  2. The LLM decides whether to call one or more tools
+  3. The agent executes the tools, appends the results, and loops
+  4. When the LLM stops calling tools, its final message is the answer
+
+"""
+from __future__ import annotations
+
 import json
 from typing import Any, Dict, Optional
 
@@ -12,62 +24,48 @@ class CareerPlusAgent:
 
     MAX_STEPS = 5
 
-    def __init__(
-        self,
-        llm,
-        tool_registry,
-    ):
+    def __init__(self, llm, tool_registry):
         self.llm = llm
         self.tool_registry = tool_registry
 
     # ==========================================================
     # SIMPLE RUN
     # ==========================================================
-
     async def run(
         self,
         user_query: str,
         history: Optional[list] = None,
-        cv_text: Optional[str] = None,
     ) -> str:
         """
         Backward-compatible method.
-
-        Returns only the final response.
+        Returns only the final response text.
         """
-
         result = await self.run_with_trace(
             user_query=user_query,
             history=history,
-            cv_text=cv_text,
         )
-
         return result["response"]
 
     # ==========================================================
     # RUN WITH TRACE
     # ==========================================================
-
     async def run_with_trace(
         self,
         user_query: str,
         history: Optional[list] = None,
-        cv_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent using an explicit AgentState.
+        Returns the full trace: response, tool_calls, steps, status.
         """
-
         state = AgentState(
             user_query=user_query,
             history=history or [],
-            cv_text=cv_text,
         )
 
         # ------------------------------------------------------
         # Initial messages
         # ------------------------------------------------------
-
         state.messages = [
             {
                 "role": "system",
@@ -88,12 +86,7 @@ class CareerPlusAgent:
         # ------------------------------------------------------
         # Agent loop
         # ------------------------------------------------------
-
-        for step in range(
-            1,
-            self.MAX_STEPS + 1,
-        ):
-
+        for step in range(1, self.MAX_STEPS + 1):
             state.current_step = step
 
             response = await self.llm.chat(
@@ -102,35 +95,23 @@ class CareerPlusAgent:
             )
 
             message = response.message
-
             tool_calls = message.tool_calls or []
 
-            print(
-                f"\n=== AGENT STEP {step} ==="
-            )
+            print(f"\n=== AGENT STEP {step} ===")
 
             # ==================================================
-            # NO TOOL CALL
+            # NO TOOL CALL → final answer
             # ==================================================
-
             if not tool_calls:
-
-                final_response = (
-                    message.content or ""
-                )
+                final_response = message.content or ""
 
                 print("No tool call.")
-                print(
-                    "========================\n"
-                )
+                print("========================\n")
 
-                state.finish(
-                    response=final_response
-                )
+                state.finish(response=final_response)
 
                 return {
                     "response": state.final_response,
-
                     "tool_calls": [
                         {
                             "step": call.step,
@@ -139,39 +120,24 @@ class CareerPlusAgent:
                         }
                         for call in state.tool_calls
                     ],
-
                     "steps": state.current_step,
-
                     "status": state.status,
                 }
 
             # ==================================================
-            # ADD ASSISTANT TOOL MESSAGE
+            # ADD ASSISTANT MESSAGE (with tool_calls)
             # ==================================================
-
             state.messages.append(message)
 
             # ==================================================
             # EXECUTE TOOLS
             # ==================================================
-
             for tool_call in tool_calls:
+                tool_name = tool_call.function.name
+                arguments = tool_call.function.arguments
 
-                tool_name = (
-                    tool_call.function.name
-                )
-
-                arguments = (
-                    tool_call.function.arguments
-                )
-
-                print(
-                    f"Tool: {tool_name}"
-                )
-
-                print(
-                    f"Arguments: {arguments}"
-                )
+                print(f"Tool: {tool_name}")
+                print(f"Arguments: {arguments}")
 
                 state.add_tool_call(
                     step=step,
@@ -182,19 +148,12 @@ class CareerPlusAgent:
                 # ------------------------------------------------
                 # Execute
                 # ------------------------------------------------
-
                 try:
-
-                    result = (
-                        await self.tool_registry.execute(
-                            tool_name=tool_name,
-                            arguments=arguments,
-                            cv_text=state.cv_text,
-                        )
+                    result = await self.tool_registry.execute(
+                        tool_name=tool_name,
+                        arguments=arguments,
                     )
-
                 except Exception as exc:
-
                     result = {
                         "status": "error",
                         "tool": tool_name,
@@ -204,7 +163,6 @@ class CareerPlusAgent:
                 # ------------------------------------------------
                 # Record result
                 # ------------------------------------------------
-
                 state.add_tool_result(
                     step=step,
                     tool=tool_name,
@@ -214,7 +172,6 @@ class CareerPlusAgent:
                 # ------------------------------------------------
                 # Give result back to Qwen
                 # ------------------------------------------------
-
                 state.messages.append(
                     {
                         "role": "tool",
@@ -222,30 +179,25 @@ class CareerPlusAgent:
                         "content": json.dumps(
                             result,
                             ensure_ascii=False,
+                            default=str,
                         ),
                     }
                 )
 
-            print(
-                "========================\n"
-            )
+            print("========================\n")
 
         # ======================================================
-        # MAX STEPS
+        # MAX STEPS REACHED
         # ======================================================
-
         error_message = (
             "The agent reached its maximum "
             "number of execution steps."
         )
 
-        state.fail(
-            error=error_message
-        )
+        state.fail(error=error_message)
 
         return {
             "response": error_message,
-
             "tool_calls": [
                 {
                     "step": call.step,
@@ -254,10 +206,7 @@ class CareerPlusAgent:
                 }
                 for call in state.tool_calls
             ],
-
             "steps": state.current_step,
-
             "status": state.status,
-
             "error": state.error,
         }

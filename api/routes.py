@@ -6,141 +6,109 @@ from api.dependencies import get_assistant_service
 from api.schemas import (
     ChatRequest,
     ChatResponse,
+    CompanySearchRequest,
+    CompanySearchResponse,
     HealthResponse,
-    JobSearchRequest,
-    JobSearchResponse,
+    PrepareApplicationRequest,
+    PrepareApplicationResponse,
     SendEmailRequest,
     SendEmailResponse,
 )
+from domain.value_objects.company_filter import CompanyFilter
 from services.assistant_service import AssistantService
 
-
-router = APIRouter(
-    prefix="/api/v1",
-)
+router = APIRouter(prefix="/api/v1")
 
 
 # ==========================================================
 # HEALTH
 # ==========================================================
-
-@router.get(
-    "/health",
-    response_model=HealthResponse,
-)
-async def health(
-    assistant: AssistantService = Depends(
-        get_assistant_service
-    ),
-):
-    return HealthResponse(
-        status="ok",
-        service="CareerPlus API",
-        model=assistant.model,
-    )
+@router.get("/health", response_model=HealthResponse)
+async def health(assistant: AssistantService = Depends(get_assistant_service)):
+    return HealthResponse(status="ok", service="CareerPlus API", model=assistant.model)
 
 
 # ==========================================================
 # CHAT
 # ==========================================================
-
-@router.post(
-    "/chat",
-    response_model=ChatResponse,
-)
+@router.post("/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    assistant: AssistantService = Depends(
-        get_assistant_service
-    ),
+    assistant: AssistantService = Depends(get_assistant_service),
 ):
     try:
-
         return await assistant.chat(
             message=request.message,
             history=request.history,
             include_trace=request.include_trace,
         )
-
     except Exception as exc:
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Agent execution failed: {exc}",
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"Agent execution failed: {exc}") from exc
 
 
 # ==========================================================
-# SEARCH JOBS
+# COMPANY SEARCH (deterministic)
 # ==========================================================
-
-@router.post(
-    "/search-jobs",
-    response_model=JobSearchResponse,
-)
-async def search_jobs(
-    request: JobSearchRequest,
-    http_request: Request,
-):
-    try:
-
-        # Reuse the single SearchJobsTool instance
-        # created during application startup.
-        tool = (
-            http_request
-            .app
-            .state
-            .search_jobs_tool
-        )
-
-        return tool.run(
-            query=request.query,
-            top_k=request.top_k,
-        )
-
-    except Exception as exc:
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Job search failed: {exc}",
-        ) from exc
+@router.post("/companies/search", response_model=CompanySearchResponse)
+async def companies_search(request: CompanySearchRequest, http_request: Request):
+    repo = http_request.app.state.companies_repo
+    f = CompanyFilter(
+        country=request.country,
+        size_max=request.size_max,
+        size_min=request.size_min,
+        founded_after=request.founded_after,
+        founded_before=request.founded_before,
+        domain_contains=request.domain_contains,
+        name_contains=request.name_contains,
+        keywords=request.keywords,
+    )
+    results = [c.to_dict() for c in (repo.filter(f) if not f.is_empty() else repo.all())]
+    return CompanySearchResponse(matches_found=len(results), results=results)
 
 
 # ==========================================================
-# SEND EMAIL
+# PREPARE APPLICATION
 # ==========================================================
+@router.post("/applications/prepare", response_model=PrepareApplicationResponse)
+async def prepare_application(request: PrepareApplicationRequest, http_request: Request):
+    from application.prepare_application import PrepareApplicationUseCase
 
-@router.post(
-    "/send-email",
-    response_model=SendEmailResponse,
-)
-async def send_email(
-    request: SendEmailRequest,
-    http_request: Request,
-):
-    try:
+    use_case = PrepareApplicationUseCase(
+        companies=http_request.app.state.companies_repo,
+        projects=http_request.app.state.projects_repo,
+        cvs=http_request.app.state.cvs_repo,
+        llm=http_request.app.state.llm,
+    )
+    result = use_case.run(company_name=request.company_name, recipient=request.recipient)
+    if result["status"] != "prepared":
+        raise HTTPException(status_code=400, detail=result.get("message", "Preparation failed."))
+    return PrepareApplicationResponse(**result)
 
-        # Reuse the single SendEmailTool instance
-        # created during application startup.
-        tool = (
-            http_request
-            .app
-            .state
-            .send_email_tool
-        )
 
-        result = await asyncio.to_thread(
-            tool.send,
-            recipient=request.recipient,
-            subject=request.subject,
-            body=request.body,
-        )
+# ==========================================================
+# SEND APPLICATION
+# ==========================================================
+@router.post("/applications/send", response_model=SendEmailResponse)
+async def send_application(request: SendEmailRequest, http_request: Request):
+    from application.send_application import SendApplicationUseCase
 
-        return result
-
-    except Exception as exc:
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Email sending failed: {exc}",
-        ) from exc
+    use_case = SendApplicationUseCase(
+        email_sender=http_request.app.state.email_sender,
+        applications=http_request.app.state.applications_repo,
+    )
+    result = await asyncio.to_thread(
+        use_case.run,
+        company=request.company,
+        contact=request.recipient,
+        subject=request.subject,
+        body=request.body,
+        cv_id=request.cv_id,
+        company_id=request.company_id,
+        projects_selected=request.projects_selected,
+    )
+    return SendEmailResponse(
+        status=result["status"],
+        message=result["message"],
+        message_id=result.get("message_id"),
+        recipient=result["recipient"],
+    )

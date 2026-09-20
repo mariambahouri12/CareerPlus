@@ -1,388 +1,145 @@
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-from tools.scraper_tool import LinkedInScraper
-from tools.search_jobs_tool import SearchJobsTool
+from tools.filter_companies_tool import FilterCompaniesTool
+from tools.generate_application_email_tool import GenerateApplicationEmailTool
+from tools.get_company_contacts_tool import GetCompanyContactsTool
+from tools.get_company_tool import GetCompanyTool
+from tools.get_projects_tool import GetProjectsTool
+from tools.scrape_linkedin_tool import ScrapeLinkedInTool
+from tools.search_companies_tool import SearchCompaniesTool
+from tools.select_cv_tool import SelectCVTool
+from tools.semantic_company_search_tool import SemanticCompanySearchTool
 from tools.send_email_tool import SendEmailTool
-from tools.get_cv_tool import GetCVTool
-
-from rag.job_indexer import JobIndexer
 
 
 class ToolRegistry:
     """
-    Register and execute available CareerPlus tools.
+    Registry of tools exposed to the agent.
 
-    This class is a pure aggregator: it exposes tool schemas
-    to the LLM and dispatches execution. It holds no business
-    logic and no descriptions — each tool describes itself.
-
-    Tool instances are created lazily, on first execution,
-    to avoid paying startup costs (Gmail auth, FAISS loading…)
-    for tools the user never actually triggers in a session.
+    Instances are lazy: created on first execution. Schemas are read
+    from the classes directly (no instantiation needed).
     """
 
     _TOOL_CLASSES = {
-        "scrape_jobs": LinkedInScraper,
-        "get_cv": GetCVTool,
-        "search_jobs": SearchJobsTool,
+        "search_companies": SearchCompaniesTool,
+        "filter_companies": FilterCompaniesTool,
+        "get_company": GetCompanyTool,
+        "semantic_company_search": SemanticCompanySearchTool,
+        "get_company_contacts": GetCompanyContactsTool,
+        "scrape_linkedin": ScrapeLinkedInTool,
+        "get_projects": GetProjectsTool,
+        "select_cv": SelectCVTool,
+        "prepare_application": GenerateApplicationEmailTool,
         "send_email": SendEmailTool,
     }
 
-    def __init__(self):
-
+    def __init__(self, shared: Dict[str, Any] | None = None):
+        # The registry receives shared singletons (repositories, llm…)
+        # so tools can be wired lazily.
+        self._shared = shared or {}
         self._instances: Dict[str, Any] = {}
-        self._indexer: Optional[JobIndexer] = None
 
-    # ==========================================================
-    # LAZY TOOL INSTANTIATION
-    # ==========================================================
+    def _get_tool(self, name: str):
+        if name not in self._instances:
+            cls = self._TOOL_CLASSES[name]
+            self._instances[name] = cls(**self._shared)
+        return self._instances[name]
 
-    @property
-    def indexer(self) -> JobIndexer:
-        """Return the lazily initialized job indexer."""
-        if self._indexer is None:
-            self._indexer = JobIndexer()
-        return self._indexer
-
-    def _get_tool(self, tool_name: str):
-        """
-        Return the cached instance of a tool, creating it on
-        first use.
-        """
-        if tool_name not in self._instances:
-
-            tool_class = self._TOOL_CLASSES[tool_name]
-
-            self._instances[tool_name] = tool_class()
-
-        return self._instances[tool_name]
-
-    # ==========================================================
-    # TOOL SCHEMAS
-    # ==========================================================
-
+    # ------------------------------------------------------------------ #
     def schemas(self) -> list[Dict[str, Any]]:
-        """
-        Return tool schemas exposed to the LLM.
-
-        Descriptions are read directly from each tool CLASS
-        (not an instance) — no instantiation needed just to
-        list the available tools.
-        """
         return [
-
-            # ==================================================
-            # 1. SCRAPE JOBS
-            # ==================================================
-
-            {
-                "type": "function",
-
-                "function": {
-
-                    "name": "scrape_jobs",
-
-                    "description": LinkedInScraper.description,
-
-                    "parameters": {
-
-                        "type": "object",
-
-                        "properties": {
-
-                            "job_title": {
-                                "type": "string",
-                                "description": (
-                                    "Job title or keywords "
-                                    "to search on LinkedIn."
-                                ),
-                            },
-
-                            "company_names": {
-                                "type": "array",
-
-                                "items": {
-                                    "type": "string"
-                                },
-                                
-                                "description": (
-                                    "Optional list of company "
-                                    "names to filter."
-                                ),
-                            },
-                        },
-
-                        "required": [
-                            "job_title"
-                        ],
-                    },
-                },
-            },
-
-            # ==================================================
-            # 2. GET CV
-            # ==================================================
-
-            {
-                "type": "function",
-
-                "function": {
-
-                    "name": "get_cv",
-
-                    "description": GetCVTool.description,
-
-                    "parameters": {
-
-                        "type": "object",
-
-                        "properties": {},
-
-                        "required": [],
-                    },
-                },
-            },
-
-            # ==================================================
-            # 3. SEARCH JOBS
-            # ==================================================
-
-            {
-                "type": "function",
-
-                "function": {
-
-                    "name": "search_jobs",
-
-                    "description": SearchJobsTool.description,
-
-                    "parameters": {
-
-                        "type": "object",
-
-                        "properties": {
-
-                            "query": {
-                                "type": "string",
-
-                                "description": (
-                                    "Natural language query "
-                                    "about indexed job offers."
-                                ),
-                            },
-
-                            "top_k": {
-                                "type": "integer",
-
-                                "minimum": 1,
-
-                                "maximum": 20,
-
-                                "description": (
-                                    "Maximum number of "
-                                    "offers to return."
-                                ),
-                            },
-
-                            "use_cv": {
-                                "type": "boolean",
-
-                                "description": (
-                                    "Whether to include the "
-                                    "uploaded CV in the search."
-                                ),
-                            },
-                        },
-
-                        "required": [
-                            "query",
-                        ],
-                    },
-                },
-            },
-
-            # ==================================================
-            # 4. SEND EMAIL
-            # ==================================================
-
-            {
-                "type": "function",
-
-                "function": {
-
-                    "name": "send_email",
-
-                    "description": SendEmailTool.description,
-
-                    "parameters": {
-
-                        "type": "object",
-
-                        "properties": {
-
-                            "recipient": {
-                                "type": "string",
-
-                                "description": (
-                                    "Email address of "
-                                    "the recipient."
-                                ),
-                            },
-
-                            "subject": {
-                                "type": "string",
-
-                                "description": (
-                                    "Email subject."
-                                ),
-                            },
-
-                            "body": {
-                                "type": "string",
-
-                                "description": (
-                                    "Full email body."
-                                ),
-                            },
-
-                            "company": {
-                                "type": "string",
-
-                                "description": (
-                                    "Name of the company "
-                                    "receiving the application."
-                                ),
-                            },
-
-                            "spontaneous": {
-                                "type": "boolean",
-
-                                "description": (
-                                    "True for a spontaneous "
-                                    "application, false otherwise."
-                                ),
-                            },
-                        },
-
-                        "required": [
-                            "recipient",
-                            "subject",
-                            "body",
-                            "company",
-                            "spontaneous",
-                        ],
-                    },
-                },
-            },
+            self._schema("search_companies", SearchCompaniesTool, {
+                "country": {"type": "string"},
+                "size_max": {"type": "integer"},
+                "size_min": {"type": "integer"},
+                "founded_after": {"type": "integer"},
+                "founded_before": {"type": "integer"},
+                "domain_contains": {"type": "string"},
+                "name_contains": {"type": "string"},
+                "keywords": {"type": "array", "items": {"type": "string"}},
+            }),
+            self._schema("filter_companies", FilterCompaniesTool, {
+                "country": {"type": "string"},
+                "size_max": {"type": "integer"},
+                "size_min": {"type": "integer"},
+                "founded_after": {"type": "integer"},
+                "founded_before": {"type": "integer"},
+                "domain_contains": {"type": "string"},
+                "name_contains": {"type": "string"},
+                "keywords": {"type": "array", "items": {"type": "string"}},
+            }),
+            self._schema("get_company", GetCompanyTool, {
+                "name": {"type": "string"},
+            }, required=["name"]),
+            self._schema("semantic_company_search", SemanticCompanySearchTool, {
+                "query": {"type": "string"},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 20},
+            }, required=["query"]),
+            self._schema("get_company_contacts", GetCompanyContactsTool, {
+                "company_id": {"type": "string"},
+                "company_name": {"type": "string"},
+            }),
+            self._schema("scrape_linkedin", ScrapeLinkedInTool, {
+                "job_title": {"type": "string"},
+                "company_names": {"type": "array", "items": {"type": "string"}},
+            }, required=["job_title"]),
+            self._schema("get_projects", GetProjectsTool, {
+                "keywords": {"type": "array", "items": {"type": "string"}},
+                "limit": {"type": "integer"},
+            }),
+            self._schema("select_cv", SelectCVTool, {
+                "project_ids": {"type": "array", "items": {"type": "string"}},
+                "company_description": {"type": "string"},
+            }),
+            self._schema("prepare_application", GenerateApplicationEmailTool, {
+                "company_name": {"type": "string"},
+                "recipient": {"type": "string"},
+            }, required=["company_name"]),
+            self._schema("send_email", SendEmailTool, {
+                "recipient": {"type": "string"},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+                "company": {"type": "string"},
+                "cv_id": {"type": "string"},
+                "company_id": {"type": "string"},
+                "projects_selected": {"type": "array", "items": {"type": "string"}},
+            }, required=["recipient", "subject", "body", "company", "cv_id"]),
         ]
 
-    # ==========================================================
-    # EXECUTE TOOLS
-    # ==========================================================
+    @staticmethod
+    def _schema(name: str, cls, properties: dict, required: list | None = None):
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": cls.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required or [],
+                },
+            },
+        }
 
+    # ------------------------------------------------------------------ #
     async def execute(
         self,
         tool_name: str,
         arguments: dict,
-        cv_text: Optional[str] = None,
     ):
-        """
-        Execute the selected tool.
+        if isinstance(arguments, str):
+            import json as _json
+            try:
+                arguments = _json.loads(arguments) if arguments.strip() else {}
+            except Exception:
+                arguments = {}
 
-        The tool instance is created (or reused from cache) here,
-        only when actually needed.
-
-        cv_text is kept outside the LLM tool arguments.
-        It comes from the uploaded CV in Streamlit.
-        """
-
-        # ======================================================
-        # TOOL DISPATCH
-        # ======================================================
-
-        handlers = {
-            "scrape_jobs": self._execute_scrape_jobs,
-            "get_cv": self._execute_get_cv,
-            "search_jobs": self._execute_search_jobs,
-            "send_email": self._execute_send_email,
-        }
-
-        handler = handlers.get(tool_name)
-
-        if handler is None:
+        if tool_name not in self._TOOL_CLASSES:
             raise ValueError(f"Unknown tool: {tool_name}")
 
-        return await handler(arguments, cv_text)
+        tool = self._get_tool(tool_name)
 
-    async def _execute_scrape_jobs(
-        self,
-        arguments: dict,
-        cv_text: Optional[str] = None,
-    ):
-        scraper = self._get_tool("scrape_jobs")
-
-        jobs = await scraper.scrape_jobs(
-            job_title=arguments["job_title"],
-            company_names=arguments.get("company_names"),
-        )
-
-        if jobs:
-            await asyncio.to_thread(
-                self.indexer.index_jobs,
-                jobs,
-            )
-
-        return {
-            "status": "success" if jobs else "empty",
-            "message": (
-                f"{len(jobs)} job offers were "
-                "scraped and indexed successfully."
-                if jobs
-                else "No new job offers were found."
-            ),
-            "jobs_count": len(jobs),
-        }
-
-    async def _execute_get_cv(
-        self,
-        arguments: dict,
-        cv_text: Optional[str] = None,
-    ):
-        cv_tool = self._get_tool("get_cv")
-
-        return await asyncio.to_thread(
-            cv_tool.run,
-            cv_text=cv_text,
-        )
-
-    async def _execute_search_jobs(
-        self,
-        arguments: dict,
-        cv_text: Optional[str] = None,
-    ):
-        search_tool = self._get_tool("search_jobs")
-
-        return await asyncio.to_thread(
-            search_tool.run,
-            query=arguments["query"],
-            top_k=arguments.get("top_k", 5),
-            use_cv=arguments.get("use_cv", False),
-            cv_text=cv_text,
-        )
-
-    async def _execute_send_email(
-        self,
-        arguments: dict,
-        cv_text: Optional[str] = None,
-    ):
-        email_tool = self._get_tool("send_email")
-
-        return await asyncio.to_thread(
-            email_tool.send,
-            recipient=arguments["recipient"],
-            subject=arguments["subject"],
-            body=arguments["body"],
-            company=arguments["company"],
-            spontaneous=arguments["spontaneous"],
-        )
+        if asyncio.iscoroutinefunction(tool.run):
+            return await tool.run(**arguments)
+        return await asyncio.to_thread(tool.run, **arguments)
